@@ -70,7 +70,7 @@ if LANGFUSE_HOST:
     os.environ["LANGFUSE_HOST"] = LANGFUSE_HOST
     os.environ["LANGFUSE_BASE_URL"] = LANGFUSE_HOST
 
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-instruct")
+MODEL_NAME = os.getenv("MODEL_NAME", "baidu/ernie-5.5-flash-preview:free")
 FALLBACK_MODEL_NAME = os.getenv("FALLBACK_MODEL_NAME", "meta-llama/llama-3.1-8b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "models/gemini-embedding-2")
