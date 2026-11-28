@@ -57,7 +57,8 @@ def runtime(monkeypatch):
     def post(url, *, headers, json):
         label = router.invoke(json)["label"]
         response = Mock()
-        response.json.return_value = {"answers": {"scope": {"type": "choice", "choice": label}}}
+        scores = {name: float(name == label) for name in json["questions"]["scope"]["criteria"]}
+        response.json.return_value = {"answers": {"scope": {"type": "choice", "choice": label, "probabilities": scores}}}
         return response
 
     monkeypatch.setattr(guardrails, "_decider_client", lambda: SimpleNamespace(post=post))
@@ -112,7 +113,7 @@ def test_public_stream_emits_fixed_reply_once(runtime, query, decision):
     events = asyncio.run(collect())
     assert [event["type"] for event in events] == ["meta", "token", "done"]
     assert events[1]["content"] == r.guardrails.REPLIES[decision]
-    assert r.router.invoke.call_count == int(query != "Hi!")
+    assert r.router.invoke.call_count == 1
 
 
 def test_tool_boundaries(runtime):
@@ -161,6 +162,7 @@ def test_reported_github_conversation(runtime, monkeypatch):
     monkeypatch.setattr(r.graph, "evaluate_github_profile", lookup)
     monkeypatch.setattr(r.graph, "model", writer)
     url = "https://github.com/the007prime"
+    r.router.invoke.return_value = {"label": "career"}
     conversation = []
     for question, target in [
         (f"can you please tell me about this github profile [{url}]({url}) and give me a complete "
@@ -180,7 +182,7 @@ def test_reported_github_conversation(runtime, monkeypatch):
         assert prompt["request"] == question
         assert prompt["github_evidence"] == f"Evidence for {target}"
         conversation.append(result["messages"][-1])
-    r.router.invoke.assert_not_called()
+    assert r.router.invoke.call_count == 4
     r.answer.invoke.assert_not_called()
 
     # An unrelated turn clears the previous target even in a saved conversation.
@@ -205,9 +207,10 @@ def test_recruiter_instructions_reach_classifier(runtime):
 
 
 @pytest.mark.parametrize("query", ["Thanks a lot!", "See you later.", "Nice to meet you!"])
-def test_chitchat_fast_path(runtime, query):
+def test_chitchat_uses_gateway(runtime, query):
+    runtime.router.invoke.return_value = {"label": "small_talk"}
     assert runtime.guardrails.classify_turn([HumanMessage(content=query)]) == "small_talk"
-    runtime.router.invoke.assert_not_called()
+    runtime.router.invoke.assert_called_once()
 
 
 def test_labeled_scope_benchmark(runtime, monkeypatch):
@@ -245,6 +248,7 @@ def test_labeled_scope_benchmark(runtime, monkeypatch):
             counts[label][actual] += 1
             if actual != label and (key or actual != "unavailable"):
                 errors.append((question, label, actual))
+    assert backend.call_count == sum(map(len, cases.values()))
     print("Scope benchmark", "live" if key else "offline", json.dumps(counts),
           "elapsed seconds", round(perf_counter() - started, 2))
     if key:
@@ -257,7 +261,13 @@ def test_labeled_scope_benchmark(runtime, monkeypatch):
         assert not errors
 
 @pytest.mark.parametrize(("status", "answer", "expected"), [
-    (200, {"type": "choice", "choice": "career"}, "career"),
+    (200, {"type": "choice", "choice": "career",
+           "probabilities": {"career": 0.95, "out_of_scope": 0.02, "small_talk": 0.02, "clarify": 0.01}}, "career"),
+    (200, {"type": "choice", "choice": "out_of_scope",
+           "probabilities": {"career": 0.16, "out_of_scope": 0.75, "small_talk": 0.04, "clarify": 0.05}}, "clarify"),
+    (200, {"type": "choice", "choice": "career",
+           "probabilities": {"career": 0.50, "out_of_scope": 0.46, "small_talk": 0.02, "clarify": 0.02}}, "clarify"),
+    (200, {"type": "choice", "choice": "career"}, "unavailable"),
     (200, {"type": "refusal"}, "unavailable"),
     (200, {"type": "choice", "choice": "unknown"}, "unavailable"),
     (429, {}, "unavailable"),

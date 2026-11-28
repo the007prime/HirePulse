@@ -4,7 +4,8 @@ import logging
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, get_args
+from math import isclose
 
 from langchain_core.messages import AIMessage, HumanMessage
 import httpx
@@ -18,6 +19,20 @@ Label = Literal["small_talk", "career", "out_of_scope", "clarify"]
 
 class Decision(BaseModel):
     label: Label
+    probabilities: dict[Label, float]
+
+    def route(self) -> Label:
+        scores = self.probabilities
+        if set(scores) != set(get_args(Label)) or any(not 0 <= v <= 1 for v in scores.values()):
+            raise ValueError("Invalid scope probabilities")
+        first, second, *_ = sorted(scores.values(), reverse=True)
+        if not isclose(sum(scores.values()), 1.0, abs_tol=0.01) or scores[self.label] != first:
+            raise ValueError("Inconsistent scope probabilities")
+        # Provisional operating points pending live calibration.
+        minimum = 0.80 if self.label == "out_of_scope" else 0.55
+        if first < minimum or first - second < 0.10:
+            return "clarify"
+        return self.label
 
 
 STANDARD_REFUSAL_MESSAGE = "I can help with résumés, job searches, interviews, and career planning. What career question would you like to explore?"
@@ -30,11 +45,7 @@ REPLIES = {
 }
 THANKS = {"thanks", "thank you", "thanks a lot", "thank you so much", "thanks for your help"}
 FAREWELLS = {"bye", "goodbye", "good night", "see you later"}
-GREETINGS = THANKS | FAREWELLS | {
-    "hi", "hello", "hey", "hey there", "good morning", "good afternoon", "good evening",
-    "nice to meet you", "how are you", "how are you doing",
-}
-# Only an explicit reference to the assistant's own rules gets a local refusal.
+# Secondary validation for web tool queries.
 OVERRIDE = re.compile(
     r"^(?:please\s+)?(?:ignore|override|disregard)\s+(?:all\s+)?your\s+"
     r"(?:system|developer)\s+(?:instructions|rules|prompt)\b", re.I,
@@ -81,17 +92,13 @@ def _model_decision(payload: dict) -> Decision:
     answer = response.json()["answers"]["scope"]
     if answer.get("type") != "choice":
         raise ValueError("Scope question did not return a choice")
-    return Decision(label=answer["choice"])
+    return Decision(label=answer["choice"], probabilities=answer["probabilities"])
 
 
 def classify_turn(messages, attached_files=()):
     current = messages[-1].content if messages and isinstance(messages[-1], HumanMessage) else ""
     if not isinstance(current, str) or not current.strip():
         return "clarify"
-    if OVERRIDE.match(current.strip()):
-        return "out_of_scope"
-    if " ".join(current.casefold().split()).strip(".!? ") in GREETINGS:
-        return "small_talk"
     history = []
     for message in reversed(messages[:-1]):
         if isinstance(message, (HumanMessage, AIMessage)) and isinstance(message.content, str) and message.content and not getattr(message, "tool_calls", None):
@@ -100,7 +107,7 @@ def classify_turn(messages, attached_files=()):
                 break
     payload = {"history": history[::-1], "current": current, "attachments": list(attached_files)[:5]}
     try:
-        return _model_decision(payload).label
+        return _model_decision(payload).route()
     except Exception as exc:
         logger.warning("Scope classifier unavailable (%s)", type(exc).__name__)
         return "unavailable"
@@ -124,6 +131,4 @@ def evaluate_scope(message, attached_files=None):
     label = classify_turn([HumanMessage(content=message or "")], attached_files or ())
     allowed = label in {"career", "small_talk"}
     category = "IN_SCOPE" if allowed else "OUT_OF_SCOPE"
-    if OVERRIDE.match((message or "").strip()):
-        return ScopeResult(False, "JAILBREAK_ATTEMPT", label, STANDARD_REFUSAL_MESSAGE, category)
     return ScopeResult(allowed, category, label, None if allowed else REPLIES[label], category)

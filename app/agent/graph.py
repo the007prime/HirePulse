@@ -168,8 +168,9 @@ def Chatnode(state: convo, config: Optional[RunnableConfig] = None):
 
 
 def scope_guard(state: convo):
-    target = portfolio_target(state["messages"])
-    return {"route": "career" if target else classify_turn(state["messages"]), "portfolio_target": target}
+    route = classify_turn(state["messages"])
+    target = portfolio_target(state["messages"]) if route == "career" else None
+    return {"route": route, "portfolio_target": target}
 
 
 def scope_reply(state: convo):
