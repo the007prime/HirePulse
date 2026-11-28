@@ -488,11 +488,16 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
 
         # Specific Repo README if requested
         if repo_name and specific_repo_readme:
-            max_s_chars = 2500
+            max_s_chars = 12288
             truncated_s = specific_repo_readme[:max_s_chars]
             if len(specific_repo_readme) > max_s_chars:
                 truncated_s += "\n\n*(Repository README truncated for length)*"
             sections.append(f"\n### 📁 Repository Deep-Dive: `{repo_name}` README\n```markdown\n{truncated_s}\n```")
+
+        if repo_name:
+            sections.append(f"Requested repository: https://github.com/{username}/{repo_name}")
+            if not specific_repo_readme:
+                sections.append("No public README was retrieved for the requested repository. Its stack is unverified.")
 
         # Verified Resource Links Section
         verified_links = [f"- [{name}'s GitHub Profile]({profile_url}) — GitHub"]

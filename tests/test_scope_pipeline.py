@@ -30,6 +30,7 @@ def runtime(monkeypatch):
         return mod
 
     class State(MessagesState, total=False):
+        portfolio_target: str | None
         route: str
         summary: str
         summarized_index: int
@@ -84,9 +85,9 @@ def test_context_and_failure(runtime):
     assert [h["text"] for h in payload["history"]] == ["Compare two roles", "Backend and ML"]
     assert payload["current"] == "What about the second one?"
     r.router.invoke.return_value = {"label": "unknown"}
-    assert r.guardrails.classify_turn(messages) == "clarify"
+    assert r.guardrails.classify_turn(messages) == "unavailable"
     r.router.invoke.side_effect = TimeoutError
-    assert r.guardrails.classify_turn(messages) == "clarify"
+    assert r.guardrails.classify_turn(messages) == "unavailable"
 
 
 @pytest.mark.parametrize(("query", "decision"), [
@@ -144,3 +145,46 @@ def test_github_readme_uses_bounded_public_api(runtime):
         return httpx.Response(200, json={"private": False})
     with httpx.Client(transport=httpx.MockTransport(serve)) as client:
         assert len(runtime.web_tools._github_readme(client, "owner", "project")) == 12288
+
+def test_reported_github_conversation(runtime, monkeypatch):
+    r = runtime
+    lookup = Mock()
+    writer = Mock()
+    monkeypatch.setattr(r.graph, "evaluate_github_profile", lookup)
+    monkeypatch.setattr(r.graph, "model", writer)
+    url = "https://github.com/the007prime"
+    conversation = []
+    for question, target in [
+        (f"can you please tell me about this github profile [{url}]({url}) and give me a complete "
+         "description of it can you please tell me about this CORE project and what tech stack "
+         "was used to create this complete project ?", "the007prime/CORE"),
+        ("i want you to evaulate this github profile and check what project it has build so far", "the007prime"),
+        ("can you please tell me about other projects it has made", "the007prime"),
+        ("tell me about the airgap-rag project", "the007prime/airgap-rag"),
+    ]:
+        conversation.append(HumanMessage(content=question))
+        lookup.invoke.return_value = f"Evidence for {target}"
+        writer.invoke.return_value = AIMessage(content=f"Summary for {target}")
+        result = r.graph.chatbot.invoke({"messages": conversation})
+        assert result["route"] == "career"
+        lookup.invoke.assert_called_with({"github_url_or_username": target})
+        prompt = json.loads(writer.invoke.call_args.args[0][-1].content)
+        assert prompt["request"] == question
+        assert prompt["github_evidence"] == f"Evidence for {target}"
+        conversation.append(result["messages"][-1])
+    r.router.invoke.assert_not_called()
+    r.answer.invoke.assert_not_called()
+
+    # An unrelated turn clears the previous target even in a saved conversation.
+    r.router.invoke.return_value = {"label": "out_of_scope"}
+    result = r.graph.chatbot.invoke({"messages": conversation + [HumanMessage(content="Give me a recipe")],
+                                     "portfolio_target": "the007prime/airgap-rag"})
+    assert result["route"] == "out_of_scope"
+    assert result["portfolio_target"] is None
+    assert lookup.invoke.call_count == 4
+
+
+def test_github_link_alone_does_not_authorize_mixed_requests(runtime):
+    from app.agent.portfolio import portfolio_target
+    assert portfolio_target([HumanMessage(content="Describe https://github.com/example and write a song")]) is None
+    assert portfolio_target([HumanMessage(content="Tell me about the CORE project")]) is None

@@ -7,14 +7,10 @@ GUARDRAIL_INSTRUCTIONS = (
 )
 
 GITHUB_EVALUATION_GUIDELINES = (
-    "\n- GitHub Profile & README Portfolio Evaluation Guidelines:"
-    "\n  1. When the user provides a GitHub profile link (e.g., `https://github.com/username` or `github.com/...`), "
-    "a repository URL, or asks to evaluate their GitHub/code portfolio, ALWAYS call the `evaluate_github_profile` tool."
-    "\n  2. Extract their technical skills, primary programming languages, featured repositories, stars, and their profile README."
-    "\n  3. Synthesize actionable career takeaways: highlight their strongest technical projects, suggest missing documentation "
-    "or metrics to showcase to recruiters, and draft high-impact ATS resume bullet points based on their actual repositories."
-    "\n  4. If the user shares their target role (e.g. 'Backend Engineer' or 'ML Engineer'), compare their GitHub tech stack "
-    "to industry requirements and suggest projects or skills to bridge any gaps."
+    "\n- For GitHub questions, use evaluate_github_profile with the requested owner or owner/repo. "
+    "Answer the specific question. List other projects with factual descriptions when asked. "
+    "For a named project inspect that repository and cite its link. Describe only technologies supported "
+    "by the retrieved evidence. Offer career, skill-gap or ATS advice only when requested."
 )
 
 SYSTEM_PROMPT = (
