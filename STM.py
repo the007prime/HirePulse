@@ -3,7 +3,7 @@
 Provides PostgreSQL state checkpointing, rolling thread summaries, and token window trimming.
 """
 
-from app.config import DATABASE_URL, DB_PATH
+from app.config import DATABASE_URL
 from app.memory.stm import (
     checkpointer,
     conn,
@@ -20,7 +20,6 @@ from app.memory.stm import (
 
 __all__ = [
     "DATABASE_URL",
-    "DB_PATH",
     "checkpointer",
     "conn",
     "convo",

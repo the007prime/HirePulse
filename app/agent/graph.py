@@ -2,13 +2,14 @@ import os
 from typing import Optional
 
 from langchain_core.messages import (
+    AIMessage,
     BaseMessage,
     HumanMessage,
     SystemMessage,
 )
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.graph import START, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.config import (
@@ -142,9 +143,8 @@ def Chatnode(state: convo, config: Optional[RunnableConfig] = None):
     }
 
 
-# Build StateGraph
+# Main Parent Graph: main LLM (Chatnode) handles domain scope via system prompt
 tool_node = ToolNode(tools)
-
 graph = StateGraph(convo)
 graph.add_node("Chatnode", Chatnode)
 graph.add_node("tools", tool_node)

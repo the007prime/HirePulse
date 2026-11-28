@@ -220,6 +220,32 @@ const markdownComponents = {
   a: SourceLink,
 };
 
+function cleanMessageContent(content) {
+  if (!content) return "";
+  let text = String(content);
+  // Remove <!-- out_of_context --> marker
+  text = text.replace(/<!--\s*out_of_context\s*-->/gi, "").trim();
+  // Strip any leading out-of-context phrases from the beginning of the response
+  text = text
+    .replace(
+      /^(your\s+request\s+appears\s+to\s+be\s+outside\s+(my\s+)?(designated\s+)?scope[.\s!]*|this\s+(request|question|topic)\s+is\s+(outside\s+(my\s+)?scope|out\s+of\s+context)[.\s!]*)/i,
+      ""
+    )
+    .trim();
+  return text;
+}
+
+function isOutOfContextMessage(content) {
+  if (!content) return false;
+  const lower = String(content).toLowerCase();
+  return (
+    lower.includes("<!-- out_of_context -->") ||
+    lower.includes("outside my designated scope") ||
+    lower.includes("start a new chat below") ||
+    lower.includes("i specialize strictly in career and job search")
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
@@ -765,86 +791,105 @@ export default function App() {
             <div className="empty-state">
               <h2>Upload & Ask Anything</h2>
               <p>
-                Attach a PDF, CSV, Markdown, or text file using the clip icon
-                below, or type your question to start.
+                Attach a resume (PDF, CSV, Markdown), README (.md), or portfolio files,
+                provide a GitHub profile link to evaluate, or ask any career question.
               </p>
             </div>
           ) : (
             <>
-              {messages.map((msg, idx) => (
-                <div key={idx} className={`message-row ${msg.role}`}>
-                  <div className="avatar">
-                    {msg.role === "user" ? <User size={16} /> : <Bot size={16} />}
-                  </div>
-                  <div className="message-bubble">
-                    {msg.role === "assistant" ? (
-                      <div className="message-content markdown-body">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={markdownComponents}
-                        >
-                          {msg.content}
-                        </ReactMarkdown>
-                      </div>
-                    ) : (
-                      <div className="message-content">{msg.content}</div>
-                    )}
+              {messages.map((msg, idx) => {
+                const isOutOfCtx = msg.role === "assistant" && isOutOfContextMessage(msg.content);
+                const displayContent = msg.role === "assistant" ? cleanMessageContent(msg.content) : msg.content;
+                return (
+                  <div key={idx} className={`message-row ${msg.role} ${isOutOfCtx ? "out-of-context-row" : ""}`}>
+                    <div className="avatar">
+                      {msg.role === "user" ? <User size={16} /> : <Bot size={16} />}
+                    </div>
+                    <div className="message-bubble">
+                      {msg.role === "assistant" ? (
+                        <div className="message-content markdown-body">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={markdownComponents}
+                          >
+                            {displayContent}
+                          </ReactMarkdown>
 
-                    {/* Message metadata & actions bar */}
-                    <div className="message-footer">
-                      {msg.role === "assistant" && msg.lastTokenDuration ? (
-                        <div
-                          className="last-token-time"
-                          title={`Time from user input to last token: ${msg.lastTokenDuration}s`}
-                        >
-                          <Clock size={12} />
-                          <span>Time taken: {msg.lastTokenDuration}s</span>
+                          {isOutOfCtx && (
+                            <div className="out-of-context-cta">
+                              <div className="out-of-context-divider" />
+                              <button
+                                type="button"
+                                className="start-new-chat-pill-btn"
+                                onClick={handleNewChat}
+                                title="Start a fresh conversation"
+                              >
+                                <Plus size={15} />
+                                <span>Start a New Chat</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <span className="footer-spacer" />
+                        <div className="message-content">{msg.content}</div>
                       )}
 
-                      <div className="message-actions">
-                        <button
-                          type="button"
-                          className="msg-action-btn"
-                          title={copiedIdx === idx ? "Copied to clipboard!" : "Copy text"}
-                          onClick={() => handleCopy(msg.content, idx)}
-                        >
-                          {copiedIdx === idx ? (
-                            <>
-                              <Check size={12} className="copy-success-icon" />
-                              <span>Copied</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy size={12} />
-                              <span>Copy</span>
-                            </>
-                          )}
-                        </button>
+                      {/* Message metadata & actions bar */}
+                      <div className="message-footer">
+                        {msg.role === "assistant" && msg.lastTokenDuration ? (
+                          <div
+                            className="last-token-time"
+                            title={`Time from user input to last token: ${msg.lastTokenDuration}s`}
+                          >
+                            <Clock size={12} />
+                            <span>Time taken: {msg.lastTokenDuration}s</span>
+                          </div>
+                        ) : (
+                          <span className="footer-spacer" />
+                        )}
 
-                        {msg.role === "assistant" && (
+                        <div className="message-actions">
                           <button
                             type="button"
                             className="msg-action-btn"
-                            title="Regenerate this response"
-                            onClick={() => handleRegenerate(idx)}
-                            disabled={isStreaming}
+                            title={copiedIdx === idx ? "Copied to clipboard!" : "Copy text"}
+                            onClick={() => handleCopy(cleanMessageContent(msg.content), idx)}
                           >
-                            <RotateCcw size={12} />
-                            <span>Regenerate</span>
+                            {copiedIdx === idx ? (
+                              <>
+                                <Check size={12} className="copy-success-icon" />
+                                <span>Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={12} />
+                                <span>Copy</span>
+                              </>
+                            )}
                           </button>
-                        )}
+
+                          {msg.role === "assistant" && (
+                            <button
+                              type="button"
+                              className="msg-action-btn"
+                              title="Regenerate this response"
+                              onClick={() => handleRegenerate(idx)}
+                              disabled={isStreaming}
+                            >
+                              <RotateCcw size={12} />
+                              <span>Regenerate</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               {/* Streaming token bubble */}
               {isStreaming && (
-                <div className="message-row assistant streaming">
+                <div className={`message-row assistant streaming ${isOutOfContextMessage(streamingContent) ? "out-of-context-row" : ""}`}>
                   <div className="avatar">
                     <Bot size={16} />
                   </div>
@@ -856,9 +901,24 @@ export default function App() {
                             remarkPlugins={[remarkGfm]}
                             components={markdownComponents}
                           >
-                            {streamingContent}
+                            {cleanMessageContent(streamingContent)}
                           </ReactMarkdown>
                           <span className="cursor-blink" />
+
+                          {isOutOfContextMessage(streamingContent) && (
+                            <div className="out-of-context-cta">
+                              <div className="out-of-context-divider" />
+                              <button
+                                type="button"
+                                className="start-new-chat-pill-btn"
+                                onClick={handleNewChat}
+                                title="Start a fresh conversation"
+                              >
+                                <Plus size={15} />
+                                <span>Start a New Chat</span>
+                              </button>
+                            </div>
+                          )}
                         </>
                       ) : (
                         <div className="thinking-row">
@@ -901,7 +961,7 @@ export default function App() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".pdf,.csv,.md,.markdown,.txt,.json,.py,.log"
+              accept=".pdf,.csv,.md,.markdown,.txt,.json,.yaml,.yml,.rst,.html,.htm,.py,.log"
               style={{ display: "none" }}
               onChange={handleFileUpload}
             />
@@ -909,7 +969,7 @@ export default function App() {
             <button
               type="button"
               className="attach-btn"
-              title="Upload PDF, CSV, MD, or text files to chat memory"
+              title="Upload PDF, CSV, README (.md), YAML, or text files to chat memory"
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading || isStreaming}
             >
@@ -929,7 +989,7 @@ export default function App() {
               placeholder={
                 isUploading
                   ? "Indexing document..."
-                  : "Ask a question about your documents... (Enter to send)"
+                  : "Ask a question, paste a GitHub link, or upload a resume / README... (Enter to send)"
               }
               disabled={isStreaming}
             />

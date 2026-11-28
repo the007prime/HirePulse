@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter
 from fastapi import Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app.memory.stm import is_thread_owner, register_user_thread
 from app.auth.security import get_current_user
@@ -30,12 +30,16 @@ def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current_user)
     def event_generator():
         try:
             yield f"data: {json.dumps({'type': 'meta', 'thread_id': thread_id})}\n\n"
-            for chunk, _metadata in chatbot.stream(
+            for _ns, (chunk, metadata) in chatbot.stream(
                 {"messages": [HumanMessage(content=req.message)]},
                 config=config,
                 stream_mode="messages",
+                subgraphs=True,
             ):
-                if isinstance(chunk, AIMessageChunk) and chunk.content:
+                node = (metadata or {}).get("langgraph_node")
+                if node != "Chatnode":
+                    continue
+                if isinstance(chunk, (AIMessageChunk, AIMessage)) and chunk.content:
                     content = chunk.content
                     if isinstance(content, list):
                         text = "".join(

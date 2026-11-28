@@ -21,6 +21,11 @@ from app.memory.stm import (
 )
 from app.agent.tools import tools
 from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.guardrails import (
+    evaluate_scope,
+    STANDARD_REFUSAL_MESSAGE,
+    JAILBREAK_REFUSAL_MESSAGE,
+)
 
 __all__ = [
     "chatbot",
@@ -37,6 +42,9 @@ __all__ = [
     "safe_trim",
     "update_summary",
     "SYSTEM_PROMPT",
+    "evaluate_scope",
+    "STANDARD_REFUSAL_MESSAGE",
+    "JAILBREAK_REFUSAL_MESSAGE",
 ]
 
 if __name__ == "__main__":
