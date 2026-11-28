@@ -220,30 +220,9 @@ const markdownComponents = {
   a: SourceLink,
 };
 
+// Older checkpoints may still contain the legacy refusal marker.
 function cleanMessageContent(content) {
-  if (!content) return "";
-  let text = String(content);
-  // Remove <!-- out_of_context --> marker
-  text = text.replace(/<!--\s*out_of_context\s*-->/gi, "").trim();
-  // Strip any leading out-of-context phrases from the beginning of the response
-  text = text
-    .replace(
-      /^(your\s+request\s+appears\s+to\s+be\s+outside\s+(my\s+)?(designated\s+)?scope[.\s!]*|this\s+(request|question|topic)\s+is\s+(outside\s+(my\s+)?scope|out\s+of\s+context)[.\s!]*)/i,
-      ""
-    )
-    .trim();
-  return text;
-}
-
-function isOutOfContextMessage(content) {
-  if (!content) return false;
-  const lower = String(content).toLowerCase();
-  return (
-    lower.includes("<!-- out_of_context -->") ||
-    lower.includes("outside my designated scope") ||
-    lower.includes("start a new chat below") ||
-    lower.includes("i specialize strictly in career and job search")
-  );
+  return String(content || "").replace(/^<!--\s*out_of_context\s*-->\s*/i, "");
 }
 
 export default function App() {
@@ -798,10 +777,10 @@ export default function App() {
           ) : (
             <>
               {messages.map((msg, idx) => {
-                const isOutOfCtx = msg.role === "assistant" && isOutOfContextMessage(msg.content);
+
                 const displayContent = msg.role === "assistant" ? cleanMessageContent(msg.content) : msg.content;
                 return (
-                  <div key={idx} className={`message-row ${msg.role} ${isOutOfCtx ? "out-of-context-row" : ""}`}>
+                  <div key={idx} className={`message-row ${msg.role}`}>
                     <div className="avatar">
                       {msg.role === "user" ? <User size={16} /> : <Bot size={16} />}
                     </div>
@@ -814,21 +793,6 @@ export default function App() {
                           >
                             {displayContent}
                           </ReactMarkdown>
-
-                          {isOutOfCtx && (
-                            <div className="out-of-context-cta">
-                              <div className="out-of-context-divider" />
-                              <button
-                                type="button"
-                                className="start-new-chat-pill-btn"
-                                onClick={handleNewChat}
-                                title="Start a fresh conversation"
-                              >
-                                <Plus size={15} />
-                                <span>Start a New Chat</span>
-                              </button>
-                            </div>
-                          )}
                         </div>
                       ) : (
                         <div className="message-content">{msg.content}</div>
@@ -889,7 +853,7 @@ export default function App() {
 
               {/* Streaming token bubble */}
               {isStreaming && (
-                <div className={`message-row assistant streaming ${isOutOfContextMessage(streamingContent) ? "out-of-context-row" : ""}`}>
+                <div className="message-row assistant streaming">
                   <div className="avatar">
                     <Bot size={16} />
                   </div>
@@ -904,21 +868,6 @@ export default function App() {
                             {cleanMessageContent(streamingContent)}
                           </ReactMarkdown>
                           <span className="cursor-blink" />
-
-                          {isOutOfContextMessage(streamingContent) && (
-                            <div className="out-of-context-cta">
-                              <div className="out-of-context-divider" />
-                              <button
-                                type="button"
-                                className="start-new-chat-pill-btn"
-                                onClick={handleNewChat}
-                                title="Start a fresh conversation"
-                              >
-                                <Plus size={15} />
-                                <span>Start a New Chat</span>
-                              </button>
-                            </div>
-                          )}
                         </>
                       ) : (
                         <div className="thinking-row">

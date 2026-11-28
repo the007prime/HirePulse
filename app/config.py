@@ -80,3 +80,8 @@ CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+# Scope routing and external readers
+ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", FALLBACK_MODEL_NAME)
+ENABLE_JINA_FALLBACK = os.getenv("ENABLE_JINA_FALLBACK", "false").lower() in {"true", "1", "yes"}
+GITHUB_READ_TOKEN = os.getenv("GITHUB_READ_TOKEN")

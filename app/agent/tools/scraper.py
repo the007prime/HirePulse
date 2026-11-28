@@ -8,13 +8,14 @@ import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 import trafilatura
 
 from app.config import (
+    ENABLE_JINA_FALLBACK,
     JINA_API_KEY,
     SCRAPE_MAX_CHARS,
     SCRAPE_MIN_CONTENT_CHARS,
@@ -100,57 +101,36 @@ def _is_disallowed_ip(ip_str: str) -> bool:
         ip_obj = ipaddress.ip_address(ip_str)
     except ValueError:
         return True
-    return (
-        ip_obj.is_private
-        or ip_obj.is_loopback
-        or ip_obj.is_link_local
-        or ip_obj.is_multicast
-        or ip_obj.is_reserved
-        or ip_obj.is_unspecified
-    )
+    if getattr(ip_obj, "ipv4_mapped", None):
+        return _is_disallowed_ip(str(ip_obj.ipv4_mapped))
+    return not ip_obj.is_global or ip_obj.is_multicast or ip_obj.is_reserved
+
+
+class UnsafeDestination(ValueError):
+    pass
+
+
+def _destination(url):
+    if not isinstance(url, str):
+        raise UnsafeDestination("Invalid URL.")
+    target = httpx.URL(url.strip())
+    host = target.host.lower().rstrip(".")
+    if (target.scheme not in {"http", "https"} or not host or target.userinfo
+            or host in BLOCKED_HOSTNAMES or host.endswith((".internal", ".local", ".localhost"))):
+        raise UnsafeDestination("Only public HTTP(S) destinations are allowed.")
+    port = target.port or (443 if target.scheme == "https" else 80)
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses or any(_is_disallowed_ip(item[4][0]) for item in addresses):
+        raise UnsafeDestination("Destination is outside the public network.")
+    return target, addresses[0][4][0]
 
 
 def validate_public_url(url: str) -> Tuple[bool, str]:
-    """Validate URL format and block SSRF targets (private/loopback/metadata IPs)."""
-    if not url or not isinstance(url, str):
-        return False, f"Invalid URL: '{url}'. Please provide a valid HTTP/HTTPS web link."
-
-    candidate = url.strip()
-    if not candidate.startswith(("http://", "https://")):
-        return False, f"Invalid URL: '{url}'. Please provide a valid HTTP/HTTPS web link."
-
-    parsed = urlparse(candidate)
-    if not parsed.hostname:
-        return False, f"Invalid URL: '{url}'. Missing hostname."
-
-    if parsed.username or parsed.password:
-        return False, f"Unsafe URL rejected: embedded credentials are not allowed."
-
-    hostname = parsed.hostname.lower().rstrip(".")
-    if hostname in BLOCKED_HOSTNAMES or hostname.endswith((".local", ".internal", ".localhost")):
-        return False, f"Blocked URL '{url}': local or internal hostnames are not permitted."
-
-    # Check if hostname is a literal IP address
     try:
-        ipaddress.ip_address(hostname)
-        if _is_disallowed_ip(hostname):
-            return False, f"Blocked URL '{url}': private or loopback IP addresses are not permitted."
-        return True, candidate
-    except ValueError:
-        pass
-
-    # Resolve DNS if available; block if any resolved IP is private/loopback
-    try:
-        addr_info = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
-        for entry in addr_info:
-            resolved_ip = entry[4][0]
-            if _is_disallowed_ip(resolved_ip):
-                return False, f"Blocked URL '{url}': resolves to a private or internal IP ({resolved_ip})."
-    except socket.gaierror:
-        # Allow fetch layer to report network/DNS errors (keeps offline mocked tests working)
-        pass
-
-    return True, candidate
+        target, _ = _destination(url)
+        return True, url.strip()
+    except (ValueError, httpx.InvalidURL, OSError):
+        return False, "Invalid or unavailable public destination."
 
 
 def extract_clean_content(raw_html: str) -> Tuple[str, str]:
@@ -291,29 +271,38 @@ def _fetch_tier1_httpx(url: str, timeout: float = SCRAPE_TIMEOUT_SECONDS) -> Tup
     Returns (ScrapeResult, should_try_tier2).
     """
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=DEFAULT_HEADERS) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-
-        headers = getattr(resp, "headers", None)
-        if isinstance(headers, dict) or hasattr(headers, "get"):
-            ctype = headers.get("content-type", "")
-            if isinstance(ctype, str) and ctype.strip():
-                mime = ctype.split(";")[0].strip().lower()
-                if mime and not any(mime.startswith(allowed) for allowed in TEXT_CONTENT_TYPES):
-                    return (
-                        ScrapeResult(
-                            url=url,
-                            method="tier1_httpx",
-                            error=f"Unsupported content type '{mime}' (non-HTML/binary resource).",
-                        ),
-                        False,
-                    )
-
-        title, text = extract_clean_content(resp.text)
+        current = url
+        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False,
+                          headers=DEFAULT_HEADERS, limits=httpx.Limits(max_keepalive_connections=0)) as client:
+            for hop in range(6):
+                target, ip = _destination(current)
+                # Connect to the vetted address. Preserve the origin for HTTP Host and TLS validation.
+                with client.stream("GET", target.copy_with(host=ip),
+                                   headers={"Host": target.netloc.decode("ascii")},
+                                   extensions={"sni_hostname": target.host}) as resp:
+                    if resp.is_redirect:
+                        location = resp.headers.get("location")
+                        if not location or hop == 5:
+                            raise UnsafeDestination("Invalid or excessive redirects.")
+                        current = urljoin(str(target), location)
+                        continue
+                    resp.raise_for_status()
+                    mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                    if mime and mime not in TEXT_CONTENT_TYPES:
+                        return ScrapeResult(url=url, error="Unsupported web content type."), False
+                    data = bytearray()
+                    for chunk in resp.iter_bytes(chunk_size=16384):
+                        if len(data) + len(chunk) > MAX_RAW_HTML_BYTES:
+                            raise UnsafeDestination("Web page exceeds the download limit.")
+                        data.extend(chunk)
+                    body = data.decode(resp.encoding or "utf-8", errors="replace")
+                    break
+        title, text = extract_clean_content(body)
         needs_t2 = _needs_js_fallback(text, status_code=getattr(resp, "status_code", 200))
         return ScrapeResult(url=url, title=title, content=text, method="tier1_httpx"), needs_t2
 
+    except (ValueError, httpx.InvalidURL, OSError) as exc:
+        return ScrapeResult(url=url, error=str(exc)), False
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response is not None else None
         should_retry_t2 = status in (401, 403, 429, 503)
@@ -419,7 +408,7 @@ def scrape_url(
                 best_res = t2_res
 
         # Tier 2b: Jina Reader if we still don't have adequate content
-        if not best_res.ok or len(best_res.content) < SCRAPE_MIN_CONTENT_CHARS:
+        if ENABLE_JINA_FALLBACK and (not best_res.ok or len(best_res.content) < SCRAPE_MIN_CONTENT_CHARS):
             jina_res = _fetch_tier2_jina(clean_url)
             if jina_res.ok and len(jina_res.content) > len(best_res.content):
                 best_res = jina_res
@@ -450,7 +439,7 @@ def scrape_urls(
         ok, msg_or_url = validate_public_url(u)
         if not ok:
             results_by_url[u] = ScrapeResult(url=u, method="error", error=msg_or_url)
-        elif msg_or_url not in results_by_url:
+        elif msg_or_url not in valid_urls:
             valid_urls.append(msg_or_url)
 
     if not valid_urls:
@@ -466,7 +455,7 @@ def scrape_urls(
                 t1_res, try_t2 = future.result()
             except Exception as exc:
                 t1_res = ScrapeResult(url=u, method="tier1_httpx", error=str(exc))
-                try_t2 = True
+                try_t2 = False
 
             results_by_url[u] = t1_res
             if try_t2:
@@ -486,7 +475,7 @@ def scrape_urls(
         remaining_for_jina = tier2_candidates
 
     # 3. Tier 2b (Jina Reader) concurrently for any remaining failed/sparse URLs
-    if remaining_for_jina:
+    if ENABLE_JINA_FALLBACK and remaining_for_jina:
         with ThreadPoolExecutor(max_workers=min(len(remaining_for_jina), 3)) as executor:
             future_map = {executor.submit(_fetch_tier2_jina, u): u for u in remaining_for_jina}
             for future in as_completed(future_map):

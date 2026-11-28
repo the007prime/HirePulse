@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 class convo(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     summary: str
+    route: str
     summarized_index: int
 
 

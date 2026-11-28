@@ -1,0 +1,27 @@
+name: HirePulse scope checks
+on:
+  push:
+    branches: [side-branch]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m compileall -q app tests
+      - name: Install dependencies for the offline graph and HTTP tests
+        run: |
+          grep -E '^(fastapi|httpx|pytest|langchain-openai|langgraph|trafilatura|beautifulsoup4|python-dotenv)(==|>=)' requirements.txt > /tmp/scope-requirements.txt
+          python -m pip install -r /tmp/scope-requirements.txt
+      - run: python -m pytest -q tests/test_scope_pipeline.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci && npm run build
+        working-directory: frontend

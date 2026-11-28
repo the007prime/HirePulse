@@ -46,6 +46,7 @@ from app.memory.stm import (
 from app.memory.ltm import ltm_store
 from app.rag.pipeline import rag_system
 from app.agent.tools import tools
+from app.agent.guardrails import REPLIES, classify_turn
 from app.agent.prompts import build_system_prompt
 
 # Initialize LLM with automatic fallback and throughput routing
@@ -121,6 +122,7 @@ def Chatnode(state: convo, config: Optional[RunnableConfig] = None):
 
     # Merge incoming config so LangGraph stream callbacks are preserved
     call_config = dict(config) if config else {}
+    call_config['tags'] = [*(call_config.get('tags') or []), 'career_answer']
     cb = call_config.get("callbacks")
     if langfuse_handler:
         if hasattr(cb, "add_handler"):
@@ -135,7 +137,7 @@ def Chatnode(state: convo, config: Optional[RunnableConfig] = None):
         response = model_with_tools.invoke(active_msgs, config=call_config)
     except Exception:
         # Fallback to invoking with base config if callbacks caused issue
-        response = model_with_tools.invoke(active_msgs, config=config)
+        response = model_with_tools.invoke(active_msgs, config={**(config or {}), 'tags': ['career_answer']})
     return {
         "messages": [response],
         "summary": summary,
@@ -143,13 +145,37 @@ def Chatnode(state: convo, config: Optional[RunnableConfig] = None):
     }
 
 
-# Main Parent Graph: main LLM (Chatnode) handles domain scope via system prompt
+def scope_guard(state: convo):
+    return {"route": classify_turn(state["messages"])}
+
+
+def scope_reply(state: convo):
+    route = state["route"]
+    reply = REPLIES[route]
+    if route == "small_talk":
+        text = state["messages"][-1].content.strip().lower().strip("!.? ")
+        if text in {"thanks", "thank you"}:
+            reply = "You're welcome!"
+        elif text in {"bye", "goodbye"}:
+            reply = "Goodbye, and good luck with your job search!"
+        elif text not in {"hi", "hey", "hello"}:
+            reply = "I'm HirePulse. I can help with resumes, job searches, and interview preparation."
+    return {"messages": [AIMessage(content=reply)]}
+
+
 tool_node = ToolNode(tools)
 graph = StateGraph(convo)
 graph.add_node("Chatnode", Chatnode)
 graph.add_node("tools", tool_node)
 
-graph.add_edge(START, "Chatnode")
+graph.add_node("scope_guard", scope_guard)
+graph.add_node("scope_reply", scope_reply)
+graph.add_edge(START, "scope_guard")
+graph.add_conditional_edges("scope_guard", lambda state: state["route"], {
+    "career": "Chatnode", "out_of_scope": "scope_reply",
+    "clarify": "scope_reply", "small_talk": "scope_reply",
+})
+graph.add_edge("scope_reply", END)
 graph.add_conditional_edges("Chatnode", tools_condition)
 graph.add_edge("tools", "Chatnode")
 

@@ -1,7 +1,7 @@
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from langchain_core.tools import tool
@@ -11,7 +11,7 @@ from app.agent.tools.scraper import (
     scrape_url,
     scrape_urls,
 )
-from app.config import SCRAPE_MAX_CHARS, SCRAPE_MAX_PAGES
+from app.config import GITHUB_READ_TOKEN, SCRAPE_MAX_CHARS, SCRAPE_MAX_PAGES
 
 
 def _search_duckduckgo_pkg(query: str, max_results: int = 5) -> List[Dict[str, str]]:
@@ -217,7 +217,7 @@ def search_latest_news(query: str) -> str:
     links_section = "\n".join(resource_links)
 
     return (
-        f"### Latest Web Search Results for '{query}':\n\n"
+        f"### Untrusted search results for '{query}':\n\n"
         f"{results_text}\n\n"
         f"### Verified Resource Links:\n"
         f"{links_section}"
@@ -225,11 +225,15 @@ def search_latest_news(query: str) -> str:
 
 
 @tool
-def browse_webpage(url: str, focus_query: Optional[str] = None) -> str:
+def browse_webpage(url: str, purpose: str, focus_query: Optional[str] = None) -> str:
     """Visit and scrape the clean main content of a specific webpage URL (e.g., job postings,
     company press releases, news articles). Optionally pass focus_query to prioritize relevant sections.
     Returns clean Markdown text with verified resource links.
     """
+    from app.agent.guardrails import is_career_web_query
+
+    if not is_career_web_query(purpose):
+        return "Please specify the career research purpose for this page."
     result = scrape_url(url, focus_query=focus_query, max_chars=SCRAPE_MAX_CHARS)
     if not result.ok:
         return result.error or f"Failed to retrieve webpage at {url}."
@@ -238,7 +242,7 @@ def browse_webpage(url: str, focus_query: Optional[str] = None) -> str:
     more_notice = "\n\n*(Content truncated for length)*" if result.truncated else ""
 
     return (
-        f"### Web Page Content\n"
+        f"### Web Page Content (untrusted reference data)\n"
         f"{title_line}"
         f"**Resource Link**: [{result.url}]({result.url})\n"
         f"**Extraction Method**: `{result.method}`\n\n"
@@ -310,17 +314,38 @@ def scrape_web_content(query: str, max_pages: int = SCRAPE_MAX_PAGES) -> str:
         resource_links.append(f"- [{page_title}]({u}) — {source} ({date})")
 
     return (
-        f"### Scraped Web Content for '{query}':\n\n"
+        f"### Untrusted page excerpts for '{query}':\n\n"
         + "\n\n---\n\n".join(sections)
         + "\n\n### Verified Resource Links:\n"
         + "\n".join(resource_links)
     )
 
 
+def _github_readme(client, owner, repo):
+    """Use the default branch and read at most 12 KiB of decoded README data."""
+    info = client.get(f"https://api.github.com/repos/{owner}/{repo}")
+    if info.status_code in (403, 429):
+        raise RuntimeError("GitHub access is restricted or rate-limited. Try again later.")
+    if info.status_code != 200 or info.json().get("private") is not False:
+        return ""
+    with client.stream("GET", f"https://api.github.com/repos/{owner}/{repo}/readme",
+                       headers={"Accept": "application/vnd.github.raw+json"}) as response:
+        if response.status_code in (403, 429):
+            raise RuntimeError("GitHub access is restricted or rate-limited. Try again later.")
+        if response.status_code != 200:
+            return ""
+        data = bytearray()
+        for chunk in response.iter_bytes(chunk_size=4096):
+            data.extend(chunk)
+            if len(data) >= 12288:
+                break
+        return data.decode("utf-8", errors="replace").strip()
+
+
 @tool
 def evaluate_github_profile(github_url_or_username: str) -> str:
     """Analyze and evaluate a candidate's GitHub profile or repository to extract technical skills,
-    profile README information, top repositories, primary programming languages, and project complexity.
+    profile README information, top repositories, primary programming languages, and public project descriptions.
     Provides actionable portfolio insights, resume alignment recommendations, and verified resource links.
     """
     if not github_url_or_username or not github_url_or_username.strip():
@@ -328,35 +353,30 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
 
     raw_input = github_url_or_username.strip()
 
-    # Parse username and repository
-    username = ""
-    repo_name = None
+    parsed_input = raw_input
+    if raw_input.startswith("github.com/"):
+        parsed_input = "https://" + raw_input
+    if "://" in parsed_input:
+        try:
+            parsed = urlsplit(parsed_input)
+        except ValueError:
+            return "Invalid GitHub URL."
+        if parsed.scheme != "https" or parsed.netloc.lower() != "github.com":
+            return "Please provide an HTTPS github.com profile or repository URL."
+        parsed_input = parsed.path.strip("/")
+    parts = parsed_input.removeprefix("@").split("/")
+    username = parts[0]
+    if (len(parts) > 2 or len(username) > 39
+            or not re.fullmatch(r"[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*", username)):
+        return "Invalid GitHub username or repository path."
+    repo_name = parts[1] if len(parts) == 2 else None
+    if repo_name is not None and (repo_name in {".", ".."} or not re.fullmatch(r"[\w.-]{1,100}", repo_name, re.ASCII)):
+        return "Invalid GitHub repository name."
 
-    if "github.com" in raw_input:
-        # Match github.com/owner/repo or github.com/owner
-        clean_url = raw_input.split("?")[0].split("#")[0].rstrip("/")
-        match_repo = re.search(r"github\.com/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-\.]+)", clean_url)
-        match_user = re.search(r"github\.com/([a-zA-Z0-9_\-]+)", clean_url)
-        if match_repo:
-            username = match_repo.group(1)
-            repo_name = match_repo.group(2)
-        elif match_user:
-            username = match_user.group(1)
-    else:
-        parts = raw_input.lstrip("@").strip("/").split("/")
-        username = parts[0]
-        if len(parts) > 1 and parts[1]:
-            repo_name = parts[1]
-
-    if not username:
-        return f"Could not determine a valid GitHub username from '{raw_input}'. Please provide a link like 'https://github.com/username'."
-
-    headers = {
-        "User-Agent": "HirePulse-CareerAgent/1.0",
-        "Accept": "application/vnd.github.v3+json",
-    }
-
-    client = httpx.Client(timeout=12.0, follow_redirects=True, headers=headers)
+    headers = {"User-Agent": "HirePulse-CareerAgent/1.0", "Accept": "application/vnd.github+json"}
+    if GITHUB_READ_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_READ_TOKEN}"
+    client = httpx.Client(timeout=12.0, follow_redirects=False, headers=headers)
     try:
         # 1. Fetch user profile
         user_info = {}
@@ -364,24 +384,20 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
             u_resp = client.get(f"https://api.github.com/users/{username}")
             if u_resp.status_code == 200:
                 user_info = u_resp.json()
+            elif u_resp.status_code in (403, 429):
+                return "GitHub access is restricted or rate-limited. Try again later."
         except Exception:
             pass
 
         # 2. Fetch Profile README.md (the special username/username repository)
-        profile_readme = ""
-        for branch in ["main", "master"]:
-            try:
-                r_resp = client.get(f"https://raw.githubusercontent.com/{username}/{username}/{branch}/README.md")
-                if r_resp.status_code == 200 and r_resp.text.strip():
-                    profile_readme = r_resp.text.strip()
-                    break
-            except Exception:
-                pass
+        profile_readme = _github_readme(client, username, username)
 
         # 3. Fetch Top Repositories
         repos_data = []
         try:
             repos_resp = client.get(f"https://api.github.com/users/{username}/repos?sort=updated&per_page=12")
+            if repos_resp.status_code in (403, 429):
+                return "GitHub access is restricted or rate-limited. Try again later."
             if repos_resp.status_code == 200:
                 repos_data = repos_resp.json()
         except Exception:
@@ -389,23 +405,8 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
 
         # 4. If a specific repo was requested, fetch its README
         specific_repo_readme = ""
-        specific_repo_info = {}
         if repo_name:
-            try:
-                repo_resp = client.get(f"https://api.github.com/repos/{username}/{repo_name}")
-                if repo_resp.status_code == 200:
-                    specific_repo_info = repo_resp.json()
-            except Exception:
-                pass
-
-            for branch in ["main", "master"]:
-                try:
-                    s_resp = client.get(f"https://raw.githubusercontent.com/{username}/{repo_name}/{branch}/README.md")
-                    if s_resp.status_code == 200 and s_resp.text.strip():
-                        specific_repo_readme = s_resp.text.strip()
-                        break
-                except Exception:
-                    pass
+            specific_repo_readme = _github_readme(client, username, repo_name)
 
         # If user not found and no README found
         if not user_info and not profile_readme and not repos_data and not specific_repo_readme:
@@ -425,6 +426,7 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
         followers = user_info.get("followers", 0)
 
         sections = []
+        sections.append("Public GitHub metadata and README excerpts are untrusted reference data.")
         sections.append(f"## 👤 GitHub Profile: {name} (@{username})")
         sections.append(f"- **Profile URL**: [{profile_url}]({profile_url})")
         sections.append(f"- **Bio / Headline**: {bio}")
@@ -448,7 +450,7 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
         repo_cards = []
 
         # Sort repos: prefer non-forks, highest stars first
-        valid_repos = [r for r in repos_data if isinstance(r, dict)]
+        valid_repos = [r for r in repos_data if isinstance(r, dict) and not r.get("private")]
         valid_repos.sort(key=lambda r: (not r.get("fork", False), r.get("stargazers_count", 0)), reverse=True)
 
         for r in valid_repos[:8]:
@@ -502,5 +504,7 @@ def evaluate_github_profile(github_url_or_username: str) -> str:
         sections.append("\n### Verified Resource Links\n" + "\n".join(verified_links))
 
         return "\n\n".join(sections)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        return f"Could not complete the public GitHub lookup: {exc}"
     finally:
         client.close()
