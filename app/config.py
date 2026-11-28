@@ -82,8 +82,6 @@ CORS_ORIGINS = [
 ]
 
 # Scope routing and external readers
-ROUTER_BACKEND = os.getenv("ROUTER_BACKEND") or "chat"
 DECIDER_MODEL = os.getenv("DECIDER_MODEL") or "perplexity/pplx-decider-flash-v1.3:free"
-ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME") or "mistralai/ministral-3b-2512"
 ENABLE_JINA_FALLBACK = os.getenv("ENABLE_JINA_FALLBACK", "false").lower() in {"true", "1", "yes"}
 GITHUB_READ_TOKEN = os.getenv("GITHUB_READ_TOKEN")

@@ -52,10 +52,15 @@ def runtime(monkeypatch):
     from app.agent.tools import scraper, web_tools
     from app.agent import graph
     chat = load("standalone_chat_route", "app/api/routes/chat.py")
-    monkeypatch.setattr(guardrails, 'ROUTER_BACKEND', 'chat')
-    real_router = guardrails._router
+    real_client = guardrails._decider_client
     router = Mock()
-    monkeypatch.setattr(guardrails, "_router", lambda: router)
+    def post(url, *, headers, json):
+        label = router.invoke(json)["label"]
+        response = Mock()
+        response.json.return_value = {"answers": {"scope": {"type": "choice", "choice": label}}}
+        return response
+
+    monkeypatch.setattr(guardrails, "_decider_client", lambda: SimpleNamespace(post=post))
     answer = Mock()
     answer.invoke.return_value = AIMessage(content="Career response")
     monkeypatch.setattr(graph, "model_with_tools", answer)
@@ -84,7 +89,7 @@ def test_context_and_failure(runtime):
                 ToolMessage(content="private tool data", tool_call_id="1"),
                 HumanMessage(content="What about the second one?")]
     assert r.guardrails.classify_turn(messages) == "career"
-    payload = json.loads(r.router.invoke.call_args.args[0][-1].content)
+    payload = json.loads(r.router.invoke.call_args.args[0]["state"])
     assert [h["text"] for h in payload["history"]] == ["Compare two roles", "Backend and ML"]
     assert payload["current"] == "What about the second one?"
     r.router.invoke.return_value = {"label": "unknown"}
@@ -211,10 +216,9 @@ def test_labeled_scope_benchmark(runtime, monkeypatch):
     from time import perf_counter
 
     key = os.getenv("HIREPULSE_BENCHMARK_KEY")
-    monkeypatch.setattr(runtime.guardrails, "ROUTER_BACKEND", os.getenv("ROUTER_BACKEND") or "chat")
     if key:
         monkeypatch.setattr(runtime.guardrails, "OPENR_API", key)
-        monkeypatch.setattr(runtime.guardrails, "_router", runtime.real_router)
+        monkeypatch.setattr(runtime.guardrails, "_decider_client", runtime.real_client)
         backend = Mock(wraps=runtime.guardrails._model_decision)
     else:
         backend = Mock(side_effect=ConnectionError("offline benchmark"))
@@ -261,7 +265,6 @@ def test_labeled_scope_benchmark(runtime, monkeypatch):
 def test_decisions_transport(runtime, monkeypatch, status, answer, expected):
     import httpx
     g = runtime.guardrails
-    monkeypatch.setattr(g, "ROUTER_BACKEND", "decisions")
     received = []
     def serve(request):
         received.append(request)

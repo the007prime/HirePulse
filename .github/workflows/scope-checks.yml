@@ -26,10 +26,7 @@ jobs:
           HIREPULSE_BENCHMARK_KEY: ${{ secrets.OPENR_API }}
         run: |
           if [ -n "$HIREPULSE_BENCHMARK_KEY" ]; then
-            for backend in chat decisions; do
-              echo "Testing $backend"
-              ROUTER_BACKEND="$backend" python -m pytest -qs tests/test_scope_pipeline.py -k labeled_scope_benchmark
-            done
+            python -m pytest -qs tests/test_scope_pipeline.py -k labeled_scope_benchmark
           else
             echo "Live measurement skipped: OPENR_API unavailable"
           fi

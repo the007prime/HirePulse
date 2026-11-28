@@ -6,12 +6,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage, HumanMessage
 import httpx
 from pydantic import BaseModel
 
-from app.config import DECIDER_MODEL, ROUTER_BACKEND, OPENR_API, OPENROUTER_BASE_URL, ROUTER_MODEL_NAME
+from app.config import DECIDER_MODEL, OPENR_API, OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 Label = Literal["small_talk", "career", "out_of_scope", "clarify"]
@@ -55,25 +54,11 @@ A recipe app on a resume is career; asking for a recipe as an engineer is out_of
 
 
 @lru_cache(maxsize=1)
-def _router():
-    return ChatOpenAI(model=ROUTER_MODEL_NAME, base_url=OPENROUTER_BASE_URL,
-                      api_key=OPENR_API, temperature=0, streaming=False,
-                      timeout=4, max_retries=0, max_tokens=48).with_structured_output(
-                          Decision, method="function_calling")
-
-
-@lru_cache(maxsize=1)
 def _decider_client():
     return httpx.Client(timeout=4.0)
 
 
 def _model_decision(payload: dict) -> Decision:
-    if ROUTER_BACKEND == "chat":
-        decision = _router().invoke([SystemMessage(content=POLICY),
-                                     HumanMessage(content=json.dumps(payload, ensure_ascii=False))])
-        return Decision.model_validate(decision)
-    if ROUTER_BACKEND != "decisions":
-        raise ValueError("Unknown scope router backend")
     response = _decider_client().post(
         f"{OPENROUTER_BASE_URL.rstrip('/')}/decisions",
         headers={"Authorization": f"Bearer {OPENR_API}"},
