@@ -47,7 +47,7 @@ from app.memory.stm import (
 from app.memory.ltm import ltm_store
 from app.rag.pipeline import rag_system
 from app.agent.tools import tools
-from app.agent.guardrails import REPLIES, classify_turn
+from app.agent.guardrails import FAREWELLS, REPLIES, THANKS, classify_turn
 from app.agent.portfolio import portfolio_target
 from app.agent.tools.web_tools import evaluate_github_profile
 from app.agent.prompts import build_system_prompt
@@ -176,10 +176,10 @@ def scope_reply(state: convo):
     route = state["route"]
     reply = REPLIES[route]
     if route == "small_talk":
-        text = state["messages"][-1].content.strip().lower().strip("!.? ")
-        if text in {"thanks", "thank you"}:
+        text = " ".join(state["messages"][-1].content.casefold().split()).strip("!.? ")
+        if text in THANKS:
             reply = "You're welcome!"
-        elif text in {"bye", "goodbye"}:
+        elif text in FAREWELLS:
             reply = "Goodbye, and good luck with your job search!"
         elif text not in {"hi", "hey", "hello"}:
             reply = "I'm HirePulse. I can help with resumes, job searches, and interview preparation."

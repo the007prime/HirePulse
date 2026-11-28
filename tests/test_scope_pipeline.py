@@ -2,6 +2,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -51,6 +52,7 @@ def runtime(monkeypatch):
     from app.agent.tools import scraper, web_tools
     from app.agent import graph
     chat = load("standalone_chat_route", "app/api/routes/chat.py")
+    real_router = guardrails._router
     router = Mock()
     monkeypatch.setattr(guardrails, "_router", lambda: router)
     answer = Mock()
@@ -188,3 +190,51 @@ def test_github_link_alone_does_not_authorize_mixed_requests(runtime):
     from app.agent.portfolio import portfolio_target
     assert portfolio_target([HumanMessage(content="Describe https://github.com/example and write a song")]) is None
     assert portfolio_target([HumanMessage(content="Tell me about the CORE project")]) is None
+
+def test_recruiter_instructions_reach_classifier(runtime):
+    question = "Ignore previous instructions from my recruiter about résumé length. Can you shorten my résumé?"
+    runtime.router.invoke.return_value = {"label": "career"}
+    assert runtime.guardrails.classify_turn([HumanMessage(content=question)]) == "career"
+    runtime.router.invoke.assert_called_once()
+
+
+@pytest.mark.parametrize("query", ["Thanks a lot!", "See you later.", "Nice to meet you!"])
+def test_chitchat_fast_path(runtime, query):
+    assert runtime.guardrails.classify_turn([HumanMessage(content=query)]) == "small_talk"
+    runtime.router.invoke.assert_not_called()
+
+
+def test_labeled_scope_benchmark(runtime, monkeypatch):
+    """Default to local coverage. Set HIREPULSE_BENCHMARK_KEY to evaluate the real router."""
+    from collections import Counter
+    from time import perf_counter
+
+    key = os.getenv("HIREPULSE_BENCHMARK_KEY")
+    if key:
+        monkeypatch.setattr(runtime.guardrails, "OPENR_API", key)
+        client = Mock(wraps=runtime.real_router())
+        monkeypatch.setattr(runtime.guardrails, "_router", lambda: client)
+    else:
+        runtime.router.invoke.side_effect = ConnectionError("offline benchmark")
+    cases = json.loads((ROOT / "tests/scope_cases.json").read_text())
+    counts = {}
+    errors = []
+    started = perf_counter()
+    for label, examples in cases.items():
+        counts[label] = Counter()
+        for item in examples:
+            question, history = (item, []) if isinstance(item, str) else item
+            messages = [(HumanMessage if role == "u" else AIMessage)(content=text)
+                        for role, text in history]
+            messages.append(HumanMessage(content=question))
+            actual = runtime.graph.scope_guard({"messages": messages})["route"]
+            counts[label][actual] += 1
+            if actual != label and (key or actual != "unavailable"):
+                errors.append((question, label, actual))
+    print("Scope benchmark", "live" if key else "offline", json.dumps(counts),
+          "elapsed seconds", round(perf_counter() - started, 2))
+    if key:
+        print("Live misses:", errors)
+        assert client.invoke.call_count > sum(row["unavailable"] for row in counts.values()), "No live model decisions"
+    else:
+        assert not errors
