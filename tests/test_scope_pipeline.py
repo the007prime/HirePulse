@@ -52,6 +52,7 @@ def runtime(monkeypatch):
     from app.agent.tools import scraper, web_tools
     from app.agent import graph
     chat = load("standalone_chat_route", "app/api/routes/chat.py")
+    monkeypatch.setattr(guardrails, 'ROUTER_BACKEND', 'chat')
     real_router = guardrails._router
     router = Mock()
     monkeypatch.setattr(guardrails, "_router", lambda: router)
@@ -210,12 +211,16 @@ def test_labeled_scope_benchmark(runtime, monkeypatch):
     from time import perf_counter
 
     key = os.getenv("HIREPULSE_BENCHMARK_KEY")
+    monkeypatch.setattr(runtime.guardrails, "ROUTER_BACKEND", os.getenv("ROUTER_BACKEND") or "chat")
     if key:
         monkeypatch.setattr(runtime.guardrails, "OPENR_API", key)
-        client = Mock(wraps=runtime.real_router())
-        monkeypatch.setattr(runtime.guardrails, "_router", lambda: client)
+        monkeypatch.setattr(runtime.guardrails, "_router", runtime.real_router)
+        backend = Mock(wraps=runtime.guardrails._model_decision)
     else:
-        runtime.router.invoke.side_effect = ConnectionError("offline benchmark")
+        backend = Mock(side_effect=ConnectionError("offline benchmark"))
+    monkeypatch.setattr(runtime.guardrails, "_model_decision", backend)
+    latencies = []
+    model_counts = {label: Counter() for label in ("career", "small_talk", "out_of_scope")}
     cases = json.loads((ROOT / "tests/scope_cases.json").read_text())
     counts = {}
     errors = []
@@ -227,14 +232,50 @@ def test_labeled_scope_benchmark(runtime, monkeypatch):
             messages = [(HumanMessage if role == "u" else AIMessage)(content=text)
                         for role, text in history]
             messages.append(HumanMessage(content=question))
+            calls = backend.call_count
+            tick = perf_counter()
             actual = runtime.graph.scope_guard({"messages": messages})["route"]
+            if backend.call_count > calls:
+                latencies.append((perf_counter() - tick) * 1000)
+                model_counts[label][actual] += 1
             counts[label][actual] += 1
             if actual != label and (key or actual != "unavailable"):
                 errors.append((question, label, actual))
     print("Scope benchmark", "live" if key else "offline", json.dumps(counts),
           "elapsed seconds", round(perf_counter() - started, 2))
     if key:
+        from math import ceil
+        assert latencies
+        print("Model-only outcomes", json.dumps(model_counts), "p95 ms", sorted(latencies)[ceil(.95 * len(latencies)) - 1])
         print("Live misses:", errors)
-        assert client.invoke.call_count > sum(row["unavailable"] for row in counts.values()), "No live model decisions"
+        assert backend.call_count > sum(row["unavailable"] for row in counts.values()), "No live model decisions"
     else:
         assert not errors
+
+@pytest.mark.parametrize(("status", "answer", "expected"), [
+    (200, {"type": "choice", "choice": "career"}, "career"),
+    (200, {"type": "refusal"}, "unavailable"),
+    (200, {"type": "choice", "choice": "unknown"}, "unavailable"),
+    (429, {}, "unavailable"),
+])
+def test_decisions_transport(runtime, monkeypatch, status, answer, expected):
+    import httpx
+    g = runtime.guardrails
+    monkeypatch.setattr(g, "ROUTER_BACKEND", "decisions")
+    received = []
+    def serve(request):
+        received.append(request)
+        return httpx.Response(status, json={"answers": {"scope": answer}})
+    with httpx.Client(transport=httpx.MockTransport(serve)) as client:
+        monkeypatch.setattr(g, "_decider_client", lambda: client)
+        messages = [HumanMessage(content="Compare the offers"), AIMessage(content="One is remote."),
+                    HumanMessage(content="Which pays more?")]
+        assert g.classify_turn(messages) == expected
+    request, = received
+    assert request.url.path.endswith("/decisions")
+    data = json.loads(request.content)
+    assert data["model"] == g.DECIDER_MODEL
+    state = json.loads(data["state"])
+    assert state["current"] == "Which pays more?"
+    assert len(state["history"]) == 2
+    runtime.router.invoke.assert_not_called()
