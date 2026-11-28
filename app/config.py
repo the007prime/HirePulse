@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,18 +7,6 @@ load_dotenv()
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "hirepulse")
 JWT_ALGORITHM = 'HS256'
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
-
-# Base filesystem directories
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_DIR = BASE_DIR / "Database"
-PERSIST_DIR = DB_DIR / "chroma_db"
-DOCS_DIR = DB_DIR / "uploads"
-DB_PATH = DB_DIR / "Chat_database.db"
-
-# Ensure directories exist
-DB_DIR.mkdir(parents=True, exist_ok=True)
-PERSIST_DIR.mkdir(parents=True, exist_ok=True)
-DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 # PostgreSQL Configuration
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
@@ -41,13 +28,35 @@ MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes"
 
 
 # File constraints
-ALLOWED_EXTENSIONS = {".pdf", ".csv", ".md", ".markdown", ".txt", ".json", ".py", ".log"}
+ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".csv",
+    ".md",
+    ".markdown",
+    ".txt",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".rst",
+    ".html",
+    ".htm",
+    ".py",
+    ".log",
+}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # API Keys & Endpoints
 OPENR_API = os.getenv("OPENR_API")
 GEMINI_API = os.getenv("GEMINI_API") or os.getenv("GOOGLE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+JINA_API_KEY = os.getenv("JINA_API_KEY")
+
+# Web Scraping Configuration
+SCRAPE_TIMEOUT_SECONDS = float(os.getenv("SCRAPE_TIMEOUT_SECONDS", "12.0"))
+SCRAPE_MAX_CHARS = int(os.getenv("SCRAPE_MAX_CHARS", "6000"))
+SCRAPE_MAX_PAGES = int(os.getenv("SCRAPE_MAX_PAGES", "3"))
+SCRAPE_MIN_CONTENT_CHARS = int(os.getenv("SCRAPE_MIN_CONTENT_CHARS", "250"))
 
 # Langfuse Configuration
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
@@ -71,3 +80,8 @@ CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+# Scope routing and external readers
+ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", FALLBACK_MODEL_NAME)
+ENABLE_JINA_FALLBACK = os.getenv("ENABLE_JINA_FALLBACK", "false").lower() in {"true", "1", "yes"}
+GITHUB_READ_TOKEN = os.getenv("GITHUB_READ_TOKEN")
