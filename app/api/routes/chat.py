@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app.memory.stm import is_thread_owner, register_user_thread
 from app.auth.security import get_current_user
+from app.agent.guardrails import REPLIES, classify_turn
 from app.agent.graph import chatbot, langfuse_handler
 from app.api.schemas.chat import ChatRequest
 
@@ -30,8 +31,16 @@ def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current_user)
     def event_generator():
         try:
             yield f"data: {json.dumps({'type': 'meta', 'thread_id': thread_id})}\n\n"
+            incoming = HumanMessage(content=req.message)
+            prior = chatbot.get_state(config).values.get("messages", []) if req.thread_id else []
+            route = classify_turn([*prior, incoming])
+            if route in {"out_of_scope", "unavailable"}:
+                yield f"data: {json.dumps({'type': 'token', 'content': REPLIES[route]})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'thread_id': thread_id})}\n\n"
+                return
+            config["configurable"]["validated_scope"] = route
             for mode, event in chatbot.stream(
-                {"messages": [HumanMessage(content=req.message)]},
+                {"messages": [incoming]},
                 config=config,
                 stream_mode=["messages", "updates"],
             ):

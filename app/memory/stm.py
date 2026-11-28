@@ -24,6 +24,7 @@ class convo(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     summary: str
     portfolio_target: Optional[str]
+    linked_pages: list[dict]
     route: str
     summarized_index: int
 

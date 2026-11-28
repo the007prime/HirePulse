@@ -52,3 +52,17 @@ def portfolio_target(messages):
         if owner:
             return f"{owner}/{named['name']}" if named else owner
     return None
+
+
+def public_links(text):
+    """Collect explicit web links without making a network request."""
+    urls = []
+    for match in re.finditer(r"""(?i)(?:https?://|(?<![\w@/])www\.)[^\s<>\[\]"']+""", text):
+        url = match.group().rstrip(".,;:!?")
+        while url.endswith(")") and url.count(")") > url.count("("):
+            url = url[:-1]
+        if url.lower().startswith("www."):
+            url = "https://" + url
+        if url not in urls:
+            urls.append(url)
+    return urls
